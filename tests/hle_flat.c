@@ -184,6 +184,7 @@ static const char* const KNOWN[] = {
     "fs.rraw",
     "fs.rimage",
     "fs.dump.hac",
+    "fs.dump.nup",
     "fs.dump.keys",
     "fs.dump.title_keys",
     "fs.dump.opened",
