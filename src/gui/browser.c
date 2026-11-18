@@ -42,7 +42,7 @@ bool gui_is_nds(const char* name) { return suffix(name, ".nds"); }
 bool gui_is_apk(const char* name) { return suffix(name, ".apk") || suffix(name, ".xapk") || suffix(name, ".apks"); }
 bool gui_is_dump(const char* name) {
     return suffix(name, ".nro") || suffix(name, ".xci") || suffix(name, ".nsp") || suffix(name, ".dxci") ||
-           suffix(name, ".dnsp") || suffix(name, "/");
+           suffix(name, ".dnsp") || suffix(name, ".nup") || suffix(name, "/");
 }
 bool gui_game_folder(const char* path) {
     char *folder = snx_dirname(path), *name, data[SNX_PATH_SIZE];

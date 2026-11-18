@@ -831,8 +831,8 @@ if(TARGET hactool_internals)
     target_compile_options(snx-test-fs-service PRIVATE -Wno-unused-parameter)
     # fs.c reads a game's dump in place through the driver's container.c and hactool
     target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c"
-)
-    target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals)
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c")
+    target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals snx_zstd)
     add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
     add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
     add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
@@ -2635,14 +2635,23 @@ add_test(NAME run_ticking COMMAND snx-test-run-ticking)
 
 # GNU C23 for hactool's headers, which build the synthetic dumps (hac_synth.h); extract.c itself stays ISO C23 in the driver
 add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/extract.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-extract gnu23)
-target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals snx_lz4 OpenSSL::Crypto snx_nx_module)
+target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals snx_lz4 snx_zstd OpenSSL::Crypto snx_nx_module)
 if(WIN32) # a scenario's crash says where it was (one ended 0xC0000005 on Windows on Arm, saying nothing)
     target_sources(snx-test-extract PRIVATE win32_crash.c)
 endif()
 add_test(NAME extraction_native COMMAND snx-test-extract)
+
+# the native NUP reader (driver/nup.c) on synthetic containers (nup_synth.h): round-trips, overlays and a corruption
+# matrix. GNU C23 for the zstd and OpenSSL headers the writer uses
+add_executable(snx-test-nup nup.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c")
+snx_test_target(snx-test-nup gnu23)
+target_link_libraries(snx-test-nup PRIVATE snx_test_common hactool_internals snx_lz4 snx_zstd OpenSSL::Crypto)
+add_test(NAME nup_native COMMAND snx-test-nup)
 
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")

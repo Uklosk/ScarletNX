@@ -7,6 +7,7 @@
 #include "common/utilities/setup.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/extract.h"
+#include "nx/runtime/driver/nup.h"
 #include "nx/runtime/driver/game_name.h"
 #include "nx/runtime/driver/recompile.h"
 #include "snx_settings.h"
@@ -149,6 +150,11 @@ int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, Sn
     if (version) *version = strstr(dump, "Update old") ? 0 : strstr(dump, "Update") ? 65536 : SNX_NO_VERSION;
     /* SNX_WORKFLOW_PROGRAMS: a collection's game dump, of that many programs */
     if (programs) *programs = addon_mode() && *title == ADDON_GAME && collection() ? collection() : 1;
+    return 0;
+}
+/* the workflow mocks the dump layer: no NUP here, so the driver's in-place check is always off */
+int snx_nup_magic(const char* path) {
+    (void)path;
     return 0;
 }
 /* the icon alone, as -x keeps it: what a game made before it kept one gets from its dump */

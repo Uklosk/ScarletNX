@@ -1023,6 +1023,10 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         }
         free(root);
     }
+    if (dump && snx_nup_magic(dump)) { /* a NUP is read in place: its files are not extracted (container.c refuses -x) */
+        if (extract) printf("A NUP is read in place: Extract dump leaves its files in the .nup, nothing copied\n");
+        extract = tmpfs = 0;
+    }
     if (nupdates) { /* the game made first, then each update or DLC made and checked, then the game played with them */
         SnxU64 title = prepared ? game_id(name) : 0, own, of_game;
         char of[17], *program, *addons_at = NULL;
@@ -1448,7 +1452,9 @@ static char* dump_into_dumps(const char* input, const SnxPaths* paths, int* fail
     char *dumps = snx_path_join(paths->repo, "dumps"), *from = snx_absolute(input), *to = NULL, *part = NULL;
     char* copy = NULL;
     *failed = 0;
-    if (!dumps || !from || !snx_is_file(from) || !snx_is_dump(from) || snx_path_within(from, dumps)) goto done;
+    if (!dumps || !from || !snx_is_file(from) || !snx_is_dump(from) || snx_nup_magic(from) ||
+        snx_path_within(from, dumps))
+        goto done; /* a NUP is read where it lies: a 9 GB copy into dumps/ is none of it */
     const char* leaf = snx_path_leaf(input);
     to = snx_path_join(dumps, leaf);
     if (!to || snx_mkdirs(dumps)) {
@@ -1522,7 +1528,8 @@ static int container_path(const char* path) {
     size = ext ? strlen(ext) : 0;
     if (size != 4 && size != 5) return 0;
     for (i = 0; i <= size; ++i) lower[i] = (char)tolower((unsigned char)ext[i]);
-    return !strcmp(lower, ".xci") || !strcmp(lower, ".nsp") || !strcmp(lower, ".dxci") || !strcmp(lower, ".dnsp");
+    return !strcmp(lower, ".xci") || !strcmp(lower, ".nsp") || !strcmp(lower, ".dxci") || !strcmp(lower, ".dnsp") ||
+           !strcmp(lower, ".nup");
 }
 /* The data folder of a run: the one --data (--repo) names, else snx_data_dir's for the program in program_dir, made
    when make is set and it is not there yet, else "." when none can be named. *found is the folder looked up, owned,

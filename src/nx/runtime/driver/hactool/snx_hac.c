@@ -415,7 +415,8 @@ int snx_hac_extract(SnxHac *hac, int container, size_t entry, int base_container
 
 /* ------------------------------------------------------------------ file systems read in place */
 
-struct SnxHacFs {
+typedef struct {
+    SnxHacFs pub; /* the ops the wrappers dispatch through (snx_hac_fs.c) */
     hactool_ctx_t tool, base_tool;
     nca_ctx_t nca, base;
     nca_section_ctx_t *exefs; /* NULL without an ExeFS */
@@ -423,7 +424,55 @@ struct SnxHacFs {
     size_t count;
     storage_t *romfs; /* the RomFS image's storage, NULL without one */
     uint64_t romfs_offset, romfs_size;
-};
+} HacFs;
+
+static void hac_fs_close(SnxHacFs *fs) {
+    HacFs *h = (HacFs *)fs;
+    program_free(&h->nca, &h->base);
+    free(h->files);
+    memset(h, 0, sizeof *h); /* the keys */
+    free(h);
+}
+
+static size_t hac_fs_files(SnxHacFs *fs, const SnxHacEntry **files) {
+    HacFs *h = (HacFs *)fs;
+    *files = h->files;
+    return h->count;
+}
+
+static int hac_fs_read(SnxHacFs *fs, size_t file, uint64_t offset, void *buffer, size_t size) {
+    HacFs *h = (HacFs *)fs;
+    const SnxHacEntry *e = &h->files[file];
+    io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
+    if (offset > e->size || size > e->size - offset) {
+        snx_hac_fprintf(stderr, "ExeFS read 0x%"PRIx64"+0x%"PRIx64" is past %s's 0x%"PRIx64" bytes\n", offset,
+                        (uint64_t)size, e->name, e->size);
+        return -1;
+    }
+    return storage_read(h->exefs->storage, e->offset + offset, buffer, size) ? 0 : -1;
+}
+
+static uint64_t hac_fs_romfs_size(const SnxHacFs *fs) {
+    const HacFs *h = (const HacFs *)fs;
+    return h->romfs ? h->romfs_size : 0;
+}
+
+static int hac_fs_read_romfs(SnxHacFs *fs, uint64_t offset, void *buffer, size_t size) {
+    HacFs *h = (HacFs *)fs;
+    io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
+    if (!h->romfs) {
+        snx_hac_fprintf(stderr, "The program NCA has no RomFS\n");
+        return -1;
+    }
+    if (offset > h->romfs_size || size > h->romfs_size - offset) {
+        snx_hac_fprintf(stderr, "RomFS read 0x%"PRIx64"+0x%"PRIx64" is past the image's 0x%"PRIx64" bytes\n", offset,
+                        (uint64_t)size, h->romfs_size);
+        return -1;
+    }
+    return storage_read(h->romfs, h->romfs_offset + offset, buffer, size) ? 0 : -1;
+}
+
+static const SnxHacFsOps hac_fs_ops = {hac_fs_close, hac_fs_files, hac_fs_read, hac_fs_romfs_size, hac_fs_read_romfs};
 
 int snx_hac_map(SnxHac *hac, int container, const void *data, uint64_t size) {
     Container *c = &hac->containers[container];
@@ -435,8 +484,9 @@ int snx_hac_map(SnxHac *hac, int container, const void *data, uint64_t size) {
 }
 
 SnxHacFs *snx_hac_fs_open(SnxHac *hac, int container, size_t entry, int base_container, size_t base_entry) {
-    SnxHacFs *fs = calloc(1, sizeof *fs);
+    HacFs *fs = calloc(1, sizeof *fs);
     if (!fs) return NULL;
+    fs->pub.ops = &hac_fs_ops;
     fs->tool.settings = hac->tool.settings;
     fs->tool.action = 0; /* the tables read, nothing printed or saved */
     if (program_process(hac, &fs->tool, &fs->nca, &fs->base_tool, &fs->base, container, entry, base_container,
@@ -468,18 +518,10 @@ SnxHacFs *snx_hac_fs_open(SnxHac *hac, int container, size_t entry, int base_con
             if (fs->romfs_offset > fs->romfs->size || fs->romfs_size > fs->romfs->size - fs->romfs_offset) goto fail;
         }
     }
-    return fs;
+    return &fs->pub;
 fail:
-    snx_hac_fs_free(fs);
+    snx_hac_fs_free(&fs->pub);
     return NULL;
-}
-
-void snx_hac_fs_free(SnxHacFs *fs) {
-    if (!fs) return;
-    program_free(&fs->nca, &fs->base);
-    free(fs->files);
-    memset(fs, 0, sizeof *fs); /* the keys */
-    free(fs);
 }
 
 int snx_hac_cnmt(SnxHac *hac, int container, size_t entry, unsigned char **data, size_t *size) {
@@ -523,36 +565,4 @@ int snx_hac_cnmt(SnxHac *hac, int container, size_t entry, unsigned char **data,
     free(nca);
     free(base);
     return rc;
-}
-
-size_t snx_hac_fs_files(SnxHacFs *fs, const SnxHacEntry **files) {
-    *files = fs->files;
-    return fs->count;
-}
-
-int snx_hac_fs_read(SnxHacFs *fs, size_t file, uint64_t offset, void *buffer, size_t size) {
-    const SnxHacEntry *e = &fs->files[file];
-    io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
-    if (offset > e->size || size > e->size - offset) {
-        snx_hac_fprintf(stderr, "ExeFS read 0x%"PRIx64"+0x%"PRIx64" is past %s's 0x%"PRIx64" bytes\n", offset,
-                        (uint64_t)size, e->name, e->size);
-        return -1;
-    }
-    return storage_read(fs->exefs->storage, e->offset + offset, buffer, size) ? 0 : -1;
-}
-
-uint64_t snx_hac_fs_romfs_size(const SnxHacFs *fs) { return fs->romfs ? fs->romfs_size : 0; }
-
-int snx_hac_fs_read_romfs(SnxHacFs *fs, uint64_t offset, void *buffer, size_t size) {
-    io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
-    if (!fs->romfs) {
-        snx_hac_fprintf(stderr, "The program NCA has no RomFS\n");
-        return -1;
-    }
-    if (offset > fs->romfs_size || size > fs->romfs_size - offset) {
-        snx_hac_fprintf(stderr, "RomFS read 0x%"PRIx64"+0x%"PRIx64" is past the image's 0x%"PRIx64" bytes\n", offset,
-                        (uint64_t)size, fs->romfs_size);
-        return -1;
-    }
-    return storage_read(fs->romfs, fs->romfs_offset + offset, buffer, size) ? 0 : -1;
 }

@@ -8,8 +8,10 @@
 
 #include "common/utilities/common.h"
 #include "nx/runtime/driver/hactool/snx_hac.h"
+#include "nx/runtime/driver/nup.h"
 
-/* an NCA where it lies: a container's number (snx_hac_open) and its entry, found 0 for none */
+/* an NCA where it lies: a container's number (snx_hac_open) and its entry, found 0 for none. For a NUP (dump->nup)
+   there are no NCAs: container is -1 and entry is the package's index (snx_nup_title/kind), found 0 for none */
 typedef struct {
     int found, container;
     size_t entry;
@@ -19,6 +21,7 @@ typedef struct {
 
 typedef struct {
     SnxHac* hac;
+    SnxNup* nup; /* a NUP read in place, else NULL: its packages picked as the NCAs below, no keys and no hactool */
     char *keys, *title_keys; /* where they were looked for */
     int has_keys;
     int say;          /* each container, its NCAs and content metas described as they are read, once (a bit a
@@ -66,8 +69,9 @@ void snx_dump_close(SnxDump* dump);
 /* the program's ExeFS and RomFS read in place, an update's over the base, or NULL, said why. An update opened
    without its base has its ExeFS and no RomFS */
 SnxHacFs* snx_dump_fs(SnxDump* dump);
-/* a DLC's RomFS image (aoc) read in place, or NULL, said why */
-SnxHacFs* snx_dump_aoc_fs(SnxDump* dump);
+/* a DLC's RomFS image (aoc) read in place, or NULL, said why. want is the DLC's title ID: a NUP holds several add-on
+   packages, and the one of that ID is served (the first add-on when want is 0), its aoc ref taken then */
+SnxHacFs* snx_dump_aoc_fs(SnxDump* dump, SnxU64 want);
 /* the HtmlDocument NCA's RomFS read in place (html-document/ in it), or NULL without one */
 SnxHacFs* snx_dump_html_fs(SnxDump* dump);
 /* 0 when the keys an NCA of dump picked needs are there, else nonzero with a line saying which are missing, how far

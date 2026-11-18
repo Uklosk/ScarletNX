@@ -293,6 +293,20 @@ static int load_dump(const char* dump, const char* update, int index, const SnxP
         snx_exefs_mods(&mods, &reader, names, files, count);
         rc = snx_load_program_from(&mods.reader, update ? update : dump, nacp, nacp_size, program, error, error_size);
         if (rc) snx_error("%s", error);
+        if (!rc && opened.nup && !quiet) { /* the tree's main.npdm is the content's identity (SPEC 5): say a mismatch */
+            size_t pkg = opened.patch.found ? opened.patch.entry : opened.program.entry;
+            SnxU64 want = snx_nup_title(opened.nup, pkg);
+            /* an update's package ID is the base's +0x800, but its main.npdm carries the base program ID: compare the
+               application bits, not the raw IDs, or every base+update would warn */
+            if ((program->npdm.title_id & ~(SnxU64)0xFFF) != (want & ~(SnxU64)0xFFF)) {
+                char a[17], b[17];
+                snx_title_text(want, a);
+                snx_title_text(program->npdm.title_id, b);
+                printf("The NUP package's title ID is %s, and its main.npdm's program ID is %s: the tree's content "
+                       "is read\n",
+                       a, b);
+            }
+        }
     }
     snx_hac_fs_free(fs);
     snx_dump_close(&opened);
@@ -740,6 +754,32 @@ static int make_program(const MakeArgs* a, int index) {
         int failed = !absolute || snx_record_source(folder, game, absolute);
         free(absolute);
         if (failed) goto done;
+    }
+    if (dump && !index && snx_nup_magic(input)) {
+        /* each add-on package checked for its game, its own .ini naming the .nup, which the runtime's dlcs_open reads
+           in place (fs.c): a NUP holds its DLCs inside, so they are recorded here rather than played each as a dump */
+        SnxNup* nup = NULL;
+        char* absolute = snx_absolute(input);
+        if (!absolute || snx_nup_open(&nup, input)) {
+            free(absolute);
+            goto done;
+        }
+        for (size_t k = 0; k < snx_nup_count(nup); k++) {
+            char text[17], *own;
+            if (snx_nup_kind(nup, k) != 2) continue;
+            snx_title_text(snx_nup_title(nup, k), text);
+            own = snx_format("%s_%s", game, text);
+            if (!own || snx_record_source(folder, own, absolute) || snx_addon_check(folder, game, text)) {
+                free(own);
+                snx_nup_close(nup);
+                free(absolute);
+                goto done;
+            }
+            free(own);
+            if (!compile.quiet) printf("DLC %s checked for the game, read from its NUP\n", text);
+        }
+        snx_nup_close(nup);
+        free(absolute);
     }
     if (no_build) {
         rc = 0;

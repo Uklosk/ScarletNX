@@ -315,7 +315,7 @@ static int extract_aoc(ExtractState* state) {
     printf("Extracting the DLC %s\n", text);
     fflush(stdout);
     if (!failed && snx_nca_keys(&state->dump, aoc, "The DLC's Data NCA")) failed = 1;
-    if (failed || snx_mkdirs(folder) || !(fs = snx_dump_aoc_fs(&state->dump))) {
+    if (failed || snx_mkdirs(folder) || !(fs = snx_dump_aoc_fs(&state->dump, aoc->title_id))) {
         failed = 1;
         goto done;
     }

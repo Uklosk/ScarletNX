@@ -47,8 +47,8 @@ static SnxU64 le_bytes(const unsigned char* p, unsigned n) {
     return value;
 }
 
-/* -1 when path can't be read, else 0 for an NSP, 1 for an XCI, 2 for neither. A gamecard dump can start with the
-   card's 0x1000-byte key area, its header after it (LibHac's XciHeader) */
+/* -1 when path can't be read, else 0 for an NSP, 1 for an XCI, 3 for a NUP, 2 for none of them. A gamecard dump can
+   start with the card's 0x1000-byte key area, its header after it (LibHac's XciHeader) */
 static int kind_of(const char* path) {
     unsigned char header[0x1104];
     size_t size;
@@ -61,6 +61,7 @@ static int kind_of(const char* path) {
     if (fclose(file)) failed = 1;
     if (failed) return -1;
     if (size >= 4 && !memcmp(header, "PFS0", 4)) return 0;
+    if (size >= 4 && !memcmp(header, "NUP\x01", 4)) return 3;
     if ((size >= 0x104 && (!memcmp(header + 0x100, "HEAD", 4) || !memcmp(header + 0x100, "DXCI", 4))) ||
         (size == sizeof header && (!memcmp(header + 0x1100, "HEAD", 4) || !memcmp(header + 0x1100, "DXCI", 4))))
         return 1;
@@ -71,6 +72,7 @@ int snx_container_kind(const char* path, int* xci) {
     char why[256];
     int kind = kind_of(path);
     if (kind < 0) return snx_error("cannot read %s: %s", path, snx_os_error(why, sizeof why));
+    if (kind == 3) return snx_error("%s is a NUP: a NUP is read in place, not extracted", path);
     if (kind == 2) return snx_error("%s is not an NSP/DNSP (PFS0) or an XCI/DXCI (HEAD/DXCI)", path);
     *xci = kind;
     return 0;
@@ -78,7 +80,7 @@ int snx_container_kind(const char* path, int* xci) {
 
 int snx_is_dump(const char* path) {
     int kind = kind_of(path);
-    return kind == 0 || kind == 1;
+    return kind == 0 || kind == 1 || kind == 3;
 }
 
 char* snx_find_keys(const char* given, const char* name, const char* repo) {
@@ -369,6 +371,7 @@ static void say_nca(const SnxHacNca* nca, const SnxHacEntry* entry) {
 }
 int snx_nca_keys(const SnxDump* dump, const SnxNcaRef* nca, const char* what) {
     char needs[96], newest[96];
+    if (dump->nup) return 0; /* a NUP's content is plaintext: no keys */
     if (nca->info.decrypted) return 0;
     generation_text(nca->info.generation, needs);
     if (!nca->info.keys && nca->info.newest < 0)
@@ -813,8 +816,60 @@ static int dump_start(SnxDump* dump, const char* keys, const char* title_keys, c
     return (dump->has_keys && load_prod_keys(dump, say)) || load_title_keys(dump);
 }
 
+/* a NUP opened: no hactool and no keys, its packages picked as the NCAs (container -1, entry the package index) */
+static int nup_start(SnxDump* dump, const char* path, int say) {
+    memset(dump, 0, sizeof *dump);
+    dump->base = dump->update = -1;
+    dump->programs = 1;
+    dump->say = say;
+    dump->version = SNX_NO_VERSION;
+    dump->opened[0] = path;
+    return 0;
+}
+static void take_pkg(SnxNcaRef* ref, SnxNup* nup, size_t pkg) {
+    memset(ref, 0, sizeof *ref);
+    ref->found = 1;
+    ref->container = -1;
+    ref->entry = pkg;
+    ref->title_id = snx_nup_title(nup, pkg);
+}
+/* the base package (kind 0) and the newest update over it: a NUP holds its update inside, not as a patch NCA */
+static int nup_select(SnxDump* dump, const char* path) {
+    int b = snx_nup_find(dump->nup, 0, 0), u;
+    if (b < 0 || !snx_nup_title(dump->nup, (size_t)b))
+        return snx_error("%s holds no base game: a standalone update needs its base elsewhere", path);
+    take_pkg(&dump->program, dump->nup, (size_t)b);
+    take_pkg(&dump->control, dump->nup, (size_t)b); /* its meta holds the NACP and icon (snx_dump_nacp/icon) */
+    dump->game = dump->program.title_id;
+    dump->version = snx_nup_version(dump->nup, (size_t)b);
+    u = snx_nup_newest_update(dump->nup);
+    if (u >= 0) {
+        take_pkg(&dump->patch, dump->nup, (size_t)u);
+        dump->version = snx_nup_version(dump->nup, (size_t)u); /* the update's version is the content's */
+    }
+    if (dump->say) {
+        char title[17];
+        snx_title_text(dump->game, title);
+        printf("Reading %s\n  a NUP, %zu packages: the game %s%s\n", path, snx_nup_count(dump->nup), title,
+               dump->patch.found ? ", its update over it" : "");
+    }
+    return 0;
+}
+
 int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index, const char* keys,
                   const char* title_keys, const char* repo, int say) {
+    if (base && snx_nup_magic(base)) {
+        if (nup_start(dump, base, say) || snx_nup_open(&dump->nup, base)) return 1;
+        if (addon && !snx_same_file(addon, base))
+            return snx_error("a NUP holds its own update and DLCs: give the game's .nup (%s), not %s", base, addon);
+        return nup_select(dump, base);
+    }
+    if (!base && addon && snx_nup_magic(addon)) { /* a DLC's NUP: its add-on picked by snx_dump_aoc_fs */
+        if (nup_start(dump, addon, say)) return 1;
+        return snx_nup_open(&dump->nup, addon) ? 1 : 0;
+    }
+    if (addon && snx_nup_magic(addon))
+        return snx_error("%s is a NUP, read in place with its own base: it cannot overlay the dump %s", addon, base);
     if (dump_start(dump, keys, title_keys, repo, say)) return 1;
     if (index < 0 || index >= SNX_PROGRAMS_MAX)
         return snx_error("program %d of a dump: an application numbers its programs from 0 to %d", index,
@@ -836,6 +891,12 @@ int snx_dump_title(SnxDump* dump, const char* path, const char* keys, const char
     size_t count, i, nmetas;
     unsigned long unreadable;
     int application = 0;
+    if (snx_nup_magic(path)) {
+        if (nup_start(dump, path, say) || snx_nup_open(&dump->nup, path) || nup_select(dump, path)) return 1;
+        *title = *game = dump->program.title_id;
+        if (version) *version = dump->version;
+        return 0;
+    }
     if (dump_start(dump, keys, title_keys, repo, say) || (dump->base = open_container(dump, path, say)) < 0 ||
         read_ncas(dump, dump->base, &entries, &count, &ncas, &unreadable))
         return 1;
@@ -862,6 +923,7 @@ int snx_dump_title(SnxDump* dump, const char* path, const char* keys, const char
 }
 
 void snx_dump_close(SnxDump* dump) {
+    snx_nup_close(dump->nup);
     snx_hac_free(dump->hac);
     free(dump->keys);
     free(dump->title_keys);
@@ -870,6 +932,14 @@ void snx_dump_close(SnxDump* dump) {
 
 SnxHacFs* snx_dump_fs(SnxDump* dump) {
     const SnxNcaRef* top = dump->patch.found ? &dump->patch : &dump->program;
+    if (dump->nup) {
+        if (!dump->patch.found && !dump->program.found) {
+            snx_error("the NUP holds no program to read");
+            return NULL;
+        }
+        return snx_nup_fs(dump->nup, top->entry,
+                          dump->patch.found && dump->program.found ? (int)dump->program.entry : -1);
+    }
     int under = dump->patch.found && dump->program.found;
     SnxHacFs* fs = snx_hac_fs_open(dump->hac, top->container, top->entry, under ? dump->program.container : -1,
                                    dump->program.entry);
@@ -878,12 +948,22 @@ SnxHacFs* snx_dump_fs(SnxDump* dump) {
 }
 
 SnxHacFs* snx_dump_html_fs(SnxDump* dump) {
-    if (!dump->html.found) return NULL;
+    if (dump->nup || !dump->html.found) return NULL; /* a NUP carries no HtmlDocument */
     return snx_hac_fs_open(dump->hac, dump->html.container, dump->html.entry, -1, 0);
 }
 
-SnxHacFs* snx_dump_aoc_fs(SnxDump* dump) {
-    SnxHacFs* fs = snx_hac_fs_open(dump->hac, dump->aoc.container, dump->aoc.entry, -1, 0);
+SnxHacFs* snx_dump_aoc_fs(SnxDump* dump, SnxU64 want) {
+    SnxHacFs* fs;
+    if (dump->nup) {
+        int pkg = snx_nup_find(dump->nup, 2, want);
+        if (pkg < 0) {
+            snx_error("the NUP holds no add-on content%s", want ? " of that title ID" : "");
+            return NULL;
+        }
+        take_pkg(&dump->aoc, dump->nup, (size_t)pkg);
+        return snx_nup_fs(dump->nup, (size_t)pkg, -1);
+    }
+    fs = snx_hac_fs_open(dump->hac, dump->aoc.container, dump->aoc.entry, -1, 0);
     if (!fs) snx_hac_error("the DLC's Data NCA cannot be read");
     return fs;
 }
@@ -1009,8 +1089,18 @@ static SnxHacFs* control_fs(SnxDump* dump, const char** why) {
     return fs;
 }
 unsigned char* snx_dump_nacp(SnxDump* dump, size_t* size, const char** why) {
-    SnxHacFs* fs = control_fs(dump, why);
+    SnxHacFs* fs;
     unsigned char* nacp;
+    if (dump->nup) {
+        if (!dump->program.found && !dump->control.found) {
+            *why = "it has no program";
+            return NULL;
+        }
+        nacp = snx_nup_meta(dump->nup, dump->program.found ? dump->program.entry : dump->control.entry, 0x0002, size);
+        *why = nacp ? NULL : "its NUP holds no NACP meta";
+        return nacp;
+    }
+    fs = control_fs(dump, why);
     if (!fs) return NULL;
     nacp = snx_romfs_file(fs, "control.nacp", size);
     snx_hac_fs_free(fs);
@@ -1024,10 +1114,22 @@ unsigned char* snx_dump_icon(SnxDump* dump, size_t* size, const char** why) {
         "German",          "LatinAmericanSpanish", "Spanish",           "Italian",
         "Dutch",           "CanadianFrench",       "Portuguese",        "Russian",
         "Korean",          "TraditionalChinese",   "SimplifiedChinese", "BrazilianPortuguese"};
-    SnxHacFs* fs = control_fs(dump, why);
+    SnxHacFs* fs;
     unsigned char* icon = NULL;
     char name[48];
     size_t i;
+    if (dump->nup) {
+        /* the icon's bytes as the meta holds them: a JPEG (FF D8) or a PNG (89 50 4E 47), which Games decodes by
+           content (gui/main.c's snx_splash_picture), so a PNG kept as icon.jpg draws all the same */
+        if (!dump->program.found && !dump->control.found) {
+            *why = "it has no program";
+            return NULL;
+        }
+        icon = snx_nup_meta(dump->nup, dump->program.found ? dump->program.entry : dump->control.entry, 0x0003, size);
+        *why = icon ? NULL : "its NUP holds no icon meta";
+        return icon;
+    }
+    fs = control_fs(dump, why);
     if (!fs) return NULL;
     for (i = 0; !icon && i < sizeof languages / sizeof *languages; ++i) {
         snprintf(name, sizeof name, "icon_%s.dat", languages[i]);

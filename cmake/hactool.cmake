@@ -7,7 +7,7 @@
 # snx_lz4's lz4.h for LZ4_decompress_safe, the only LZ4 function hactool calls
 set(hactool_src "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/hactool")
 set(hactool_sources save sha aes extkeys rsa npdm bktr kip packages pki pfs0 hfs0 nca0_romfs romfs utils nax0 nso nca
-                    xci filepath ConvertUTF storage snx_hac)
+                    xci filepath ConvertUTF storage snx_hac snx_hac_fs)
 list(TRANSFORM hactool_sources PREPEND "${hactool_src}/")
 list(TRANSFORM hactool_sources APPEND .c)
 add_library(hactool_lib STATIC ${hactool_sources})

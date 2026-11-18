@@ -110,12 +110,14 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
         (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
         (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
         fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
-    if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
-                 snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
-        fatal("Could not map the game's dump %s", base);
-    if (addon && (plat_file_map_sized(addon_map, addon, snx_file_size(addon)) ||
-                  snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
-        fatal("Could not map the add-on's dump %s", addon);
+    if (!dump->nup) { /* a NUP preads its extents where they lie: nothing mapped (driver/nup.c) */
+        if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
+                     snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
+            fatal("Could not map the game's dump %s", base);
+        if (addon && (plat_file_map_sized(addon_map, addon, snx_file_size(addon)) ||
+                      snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
+            fatal("Could not map the add-on's dump %s", addon);
+    }
     snx_hac_on_exit(NULL, NULL);
 }
 
@@ -236,18 +238,22 @@ static void dump_open(const char* keys, const char* title_keys) {
     if (!g_hle.fs.dfs) fatal("Could not read the game's program in its dump %s: the line before says why", source);
     snx_hac_on_exit(NULL, NULL);
     pm_init(&g_host.fs.dlock);
-    if (g_program)
-        LOG("fs: program %d of the application read from the dump%s %s (its %d programs; %.1f MB mapped)\n", g_program,
-            kind == SNX_ADDON_UPDATE ? ", its update's patch of it over the game's," : "", source,
-            g_hle.fs.dump.programs, (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
-    if (kind == SNX_ADDON_UPDATE) {
-        LOG("fs: ExeFS and RomFS read from the update %s over the game's dump %s (%.1f MB mapped)\n", addon, source,
-            (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
-        free(addon);
-        addon = NULL;
-    } else
-        LOG("fs: ExeFS and RomFS read from the dump %s (%.1f MB mapped)\n", source,
-            (double)g_hle.fs.dmap.size / 1048576.0);
+    {
+        double mb = g_hle.fs.dump.nup ? (double)snx_file_size(source) / 1048576.0
+                                      : (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0;
+        const char* how = g_hle.fs.dump.nup ? "read in place" : "mapped";
+        if (g_program)
+            LOG("fs: program %d of the application read from the dump%s %s (its %d programs; %.1f MB %s)\n", g_program,
+                kind == SNX_ADDON_UPDATE ? ", its update's patch of it over the game's," : "", source,
+                g_hle.fs.dump.programs, mb, how);
+        if (kind == SNX_ADDON_UPDATE) {
+            LOG("fs: ExeFS and RomFS read from the update %s over the game's dump %s (%.1f MB %s)\n", addon, source, mb,
+                how);
+            free(addon);
+            addon = NULL;
+        } else
+            LOG("fs: ExeFS and RomFS read from the dump %s (%.1f MB %s)\n", source, mb, how);
+    }
     free(source);
 done:
     free(addon);
@@ -292,7 +298,7 @@ static void dlcs_open(const char* keys, const char* title_keys) {
         else {
             dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, 0, keys, title_keys, repo);
             snx_hac_on_exit(dump_exit, NULL);
-            aoc->fs = snx_dump_aoc_fs(&aoc->dump);
+            aoc->fs = snx_dump_aoc_fs(&aoc->dump, ids[i].id);
             if (!aoc->fs) fatal("Could not read the DLC in its dump %s: the line before says why", dump);
             snx_hac_on_exit(NULL, NULL);
             if (aoc->dump.aoc.title_id != ids[i].id)
